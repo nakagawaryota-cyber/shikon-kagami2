@@ -1,0 +1,1750 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#f3e6cc">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="四魂鑑">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+  <link rel="icon" type="image/png" sizes="512x512" href="icon-512.png">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <title>四魂鑑</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      overscroll-behavior: none;
+      -webkit-tap-highlight-color: transparent;
+      background: #f3e6cc;
+    }
+    body {
+      padding-top: env(safe-area-inset-top);
+    }
+    #root {
+      min-height: 100vh;
+    }
+    .loading {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      font-family: serif;
+      color: #6b5b47;
+      letter-spacing: 0.2em;
+    }
+  </style>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+  <div id="root"><div class="loading">静かに巻物を開いています…</div></div>
+
+  <script>
+    // ============================================================
+    // localStorage 互換ラッパー（window.storage API を localStorage で実装）
+    // ============================================================
+    window.storage = {
+      get: async (key) => {
+        const value = localStorage.getItem(key);
+        if (value === null) return null;
+        return { key, value, shared: false };
+      },
+      set: async (key, value) => {
+        localStorage.setItem(key, value);
+        return { key, value, shared: false };
+      },
+      delete: async (key) => {
+        localStorage.removeItem(key);
+        return { key, deleted: true, shared: false };
+      },
+      list: async (prefix) => {
+        const keys = [];
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (!prefix || k.startsWith(prefix)) keys.push(k);
+        }
+        return { keys, prefix, shared: false };
+      },
+    };
+
+    // Service Worker 登録
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('service-worker.js').catch(err => {
+          console.log('SW registration failed:', err);
+        });
+      });
+    }
+  </script>
+
+  <script type="text/babel" data-presets="env,react">
+const { useState, useEffect, useMemo } = React;
+
+// ============================================================
+// 四魂データ — 戒律・堕ちた魂・細分機能を組み込み
+// ============================================================
+const SOULS = {
+  kushimitama: {
+    kanji: '奇魂', kana: 'くしみたま', virtue: '智',
+    color: '#745399',
+    position: { x: 0, y: -1 },
+    essence: '見抜く',
+    discipline: { kanji: '覚', kana: 'さとる', meaning: '見えなかったものに気づく' },
+    fallen: '狂魂', fallenDesc: '思想的に歪み、冷笑と狡知に走る',
+    subdivision: '巧・感・察・覚・悟',
+    low: '感情的・無計画',
+    high: '分析麻痺・冷笑',
+    practice: 'なぜを五段深める／静坐観照／脈想法',
+  },
+  aramitama: {
+    kanji: '荒魂', kana: 'あらみたま', virtue: '勇',
+    color: '#c73e1d',
+    position: { x: 1, y: 0 },
+    essence: '踏み出す',
+    discipline: { kanji: '恥', kana: 'はじる', meaning: '道を外れた振る舞いを恥じる' },
+    fallen: '争魂', fallenDesc: '他者と争うばかりになる',
+    subdivision: null,
+    low: '決断不能・停滞',
+    high: '独善・暴走',
+    practice: '冷水浴／早朝歩行／十秒で決める訓練',
+  },
+  sakimitama: {
+    kanji: '幸魂', kana: 'さきみたま', virtue: '愛',
+    color: '#5b8c5a',
+    position: { x: 0, y: 1 },
+    essence: '育てる',
+    discipline: { kanji: '畏', kana: 'おそる', meaning: '増長・慢心を畏れる' },
+    fallen: '逆魂', fallenDesc: '道徳的に退廃する',
+    subdivision: '益・造・生・化・育',
+    low: '冷淡・つながりの喪失',
+    high: 'お節介・共依存',
+    practice: '見返りを求めぬ一日一善／植物の世話／感謝を綴る',
+  },
+  nigimitama: {
+    kanji: '和魂', kana: 'にぎみたま', virtue: '親',
+    color: '#165e83',
+    position: { x: -1, y: 0 },
+    essence: 'つなぐ',
+    discipline: { kanji: '悔', kana: 'くゆる', meaning: '不和や断絶を悔いて修復する' },
+    fallen: '悪魂', fallenDesc: '少数で悪事を企む',
+    subdivision: null,
+    low: '孤立・対立',
+    high: '迎合・自己喪失',
+    practice: '異論を最後まで聞く／合唱／まなゆい「ゆるす」',
+  },
+};
+
+const SOUL_ORDER = ['kushimitama', 'aramitama', 'sakimitama', 'nigimitama'];
+
+const OPPOSITES = {
+  aramitama: 'nigimitama',
+  nigimitama: 'aramitama',
+  sakimitama: 'kushimitama',
+  kushimitama: 'sakimitama',
+};
+
+const QUESTIONS = [
+  { soul: 'kushimitama', kind: 'function', text: '物事の構造や本質を冷静に観察できたか' },
+  { soul: 'kushimitama', kind: 'function', text: '思考が澄み、新たな洞察を得たか' },
+  { soul: 'kushimitama', kind: 'discipline', text: '見えなかったことに「気づく」瞬間があったか' },
+  { soul: 'aramitama', kind: 'function', text: '迷いを断ち切って踏み出せたか' },
+  { soul: 'aramitama', kind: 'function', text: '困難や抵抗に正面から向き合えたか' },
+  { soul: 'aramitama', kind: 'discipline', text: '道を外れた振る舞いを「恥じる」感覚を保てたか' },
+  { soul: 'sakimitama', kind: 'function', text: '見返りを求めず、誰かに与えられたか' },
+  { soul: 'sakimitama', kind: 'function', text: '他者の成長を願い、感謝を感じたか' },
+  { soul: 'sakimitama', kind: 'discipline', text: '自分の優しさが慢心や承認欲求でないかと「畏れ」たか' },
+  { soul: 'nigimitama', kind: 'function', text: '異なる意見を落ち着いて聞けたか' },
+  { soul: 'nigimitama', kind: 'function', text: '対立や緊張を抱えても平静でいられたか' },
+  { soul: 'nigimitama', kind: 'discipline', text: '不和や断絶を「悔いて」修復に向かえたか' },
+  { soul: 'naohi', kind: 'naohi', text: 'もうひとりの自分が自分を観察していたか' },
+];
+
+const SCALE_LABELS = ['まったく', 'あまり', '半ば', 'まあ', 'よく'];
+
+const NAOHI_PROMPTS = [
+  '今日、どの戒律（恥・悔・畏・覚）が試されたか',
+  '善の仮面をかぶった声（曲霊）に気づいた瞬間があったか',
+  '義憤（高次の荒魂）と私憤（低次）の違いを感じた場面は',
+  'この優しさは本物の幸魂か、承認欲求の仮面か',
+  '「これでよいか」と良心に問いかける間があったか',
+  '眠っていた魂を起こすために、明日ひとつ試すなら',
+  '判断の前に、主となる魂を意図的に選べたか',
+  '四魂が同時に働いた瞬間があったか',
+  '今日の自分は厳霊（経）寄りか、瑞霊（緯）寄りか',
+];
+
+const STORAGE_KEY = 'shikon:entries:v2';
+
+async function loadEntries() {
+  try {
+    const result = await window.storage.get(STORAGE_KEY);
+    if (!result) {
+      try {
+        const legacy = await window.storage.get('shikon:entries:v1');
+        if (legacy) {
+          const oldEntries = JSON.parse(legacy.value);
+          return oldEntries.map(migrateEntry);
+        }
+      } catch (e2) {}
+      return [];
+    }
+    return JSON.parse(result.value);
+  } catch (e) {
+    return [];
+  }
+}
+
+function migrateEntry(old) {
+  return {
+    ...old,
+    soulFunction: old.scores || old.soulFunction || {
+      kushimitama: 50, aramitama: 50, sakimitama: 50, nigimitama: 50,
+    },
+    soulDiscipline: old.soulDiscipline || {
+      kushimitama: 50, aramitama: 50, sakimitama: 50, nigimitama: 50,
+    },
+    naohi: old.naohi ?? 50,
+    legacy: !old.soulDiscipline,
+  };
+}
+
+async function saveEntries(entries) {
+  try {
+    await window.storage.set(STORAGE_KEY, JSON.stringify(entries));
+    return true;
+  } catch (e) {
+    console.error('保存失敗', e);
+    return false;
+  }
+}
+
+function computeScores(answers) {
+  const soulFunction = {};
+  const soulDiscipline = {};
+  let naohi = 50;
+
+  SOUL_ORDER.forEach((key) => {
+    const fnAns = QUESTIONS
+      .map((q, i) => ({ q, v: answers[i] }))
+      .filter((x) => x.q.soul === key && x.q.kind === 'function');
+    const dpAns = QUESTIONS
+      .map((q, i) => ({ q, v: answers[i] }))
+      .filter((x) => x.q.soul === key && x.q.kind === 'discipline');
+
+    const fnSum = fnAns.reduce((s, x) => s + (x.v ?? 3), 0);
+    soulFunction[key] = Math.round((fnSum / (fnAns.length * 5)) * 100);
+
+    const dpSum = dpAns.reduce((s, x) => s + (x.v ?? 3), 0);
+    soulDiscipline[key] = Math.round((dpSum / (dpAns.length * 5)) * 100);
+  });
+
+  const naohiAns = QUESTIONS
+    .map((q, i) => ({ q, v: answers[i] }))
+    .filter((x) => x.q.kind === 'naohi');
+  if (naohiAns.length > 0) {
+    naohi = Math.round(((naohiAns[0].v ?? 3) / 5) * 100);
+  }
+
+  return { soulFunction, soulDiscipline, naohi };
+}
+
+function interpret(data) {
+  const { soulFunction, soulDiscipline, naohi } = data;
+  const fnVals = SOUL_ORDER.map((k) => soulFunction[k]);
+  const max = Math.max(...fnVals);
+  const min = Math.min(...fnVals);
+  const avg = fnVals.reduce((a, b) => a + b, 0) / 4;
+  const spread = max - min;
+
+  const fnHigh = SOUL_ORDER.filter((k) => soulFunction[k] >= 65).length;
+  let stage;
+  if (fnHigh === 4 && spread < 22 && avg >= 70 && naohi >= 60) {
+    stage = { label: '全徳・伊都能売御霊', desc: '四魂が等しく発達し、直霊が統べる境地' };
+  } else if (fnHigh >= 3) {
+    const developed = SOUL_ORDER.filter((k) => soulFunction[k] >= 65).map((k) => SOULS[k].virtue);
+    stage = { label: '三徳', desc: `${developed.join('・')} の魂が発達` };
+  } else if (fnHigh === 2) {
+    const developed = SOUL_ORDER.filter((k) => soulFunction[k] >= 65).map((k) => SOULS[k].virtue);
+    stage = { label: '二徳', desc: `${developed.join('・')} の魂が組合さる` };
+  } else if (fnHigh === 1) {
+    const developed = SOUL_ORDER.filter((k) => soulFunction[k] >= 65).map((k) => SOULS[k].virtue);
+    stage = { label: '一徳', desc: `${developed[0]} の魂が突出` };
+  } else {
+    stage = { label: '養成期', desc: '四魂を起こす段階' };
+  }
+
+  const tate = (soulFunction.aramitama + soulFunction.nigimitama) / 2;
+  const yoko = (soulFunction.sakimitama + soulFunction.kushimitama) / 2;
+  let soulType;
+  if (tate > yoko + 12) soulType = { label: '厳霊型', desc: '荒・和（経の魂）が主軸' };
+  else if (yoko > tate + 12) soulType = { label: '瑞霊型', desc: '幸・奇（緯の魂）が主軸' };
+  else soulType = { label: '均衡型', desc: '経・緯の魂が拮抗' };
+
+  let balance;
+  if (spread < 15) balance = '調和';
+  else if (spread < 30) balance = '準調和';
+  else if (spread < 50) balance = '偏り';
+  else balance = '大きな偏り';
+
+  const cautions = [];
+  const guidance = [];
+  const fallen = [];
+
+  if (naohi <= 30) {
+    cautions.push({
+      severity: 'high',
+      text: `直霊の「省」が弱まっている。曲霊化の予兆。「自分は正しい」「もっと評価されるべきだ」という声が紛れ込んでいないか確かめる。`,
+    });
+  } else if (naohi >= 75) {
+    guidance.push(`直霊の「省」が良く働いている。観察する自己を保つこと自体が直霊鍛錬の核心。`);
+  }
+
+  SOUL_ORDER.forEach((k) => {
+    const s = SOULS[k];
+    if (soulFunction[k] >= 65 && soulDiscipline[k] <= 40) {
+      fallen.push({ key: k, name: s.fallen, desc: s.fallenDesc });
+      cautions.push({
+        severity: 'high',
+        text: `${s.kanji}が強く出ているのに「${s.discipline.kanji}（${s.discipline.kana}）」が弱い。${s.fallen}化のリスク——${s.fallenDesc}。`,
+      });
+      guidance.push(`${s.kanji}を抑える前に、まず「${s.discipline.kanji}」を取り戻す。${s.discipline.meaning}を意識して一日を歩む。`);
+    }
+  });
+
+  const dpAvg = SOUL_ORDER.reduce((s, k) => s + soulDiscipline[k], 0) / 4;
+  if (dpAvg <= 40 && naohi >= 50) {
+    cautions.push({
+      severity: 'mid',
+      text: `戒律全体が弱い。四魂は動いているが、それを律する内面の規範が緩んでいる。`,
+    });
+  }
+
+  SOUL_ORDER.forEach((k) => {
+    if (soulFunction[k] >= 80 && soulFunction[k] === max) {
+      const s = SOULS[k];
+      const opp = SOULS[OPPOSITES[k]];
+      guidance.push(`${s.kanji}が突出。「${s.high}」に傾く前に${opp.kanji}で抑える。${opp.practice}。`);
+    }
+  });
+
+  SOUL_ORDER.forEach((k) => {
+    if (soulFunction[k] <= 40 && soulFunction[k] === min) {
+      const s = SOULS[k];
+      cautions.push({
+        severity: 'mid',
+        text: `${s.kanji}が眠っている。「${s.low}」に陥りやすい。`,
+      });
+      guidance.push(`${s.kanji}を起こす行：${s.practice}。`);
+    }
+  });
+
+  if (stage.label === '全徳・伊都能売御霊') {
+    guidance.unshift(`四魂が均衡し直霊が統べている。中村天風の「絶対積極」、出口王仁三郎の「伊都能売御霊」に通じる境地。この感覚を身体に記憶させる。`);
+  }
+
+  return {
+    balance, avg: Math.round(avg), spread,
+    stage, soulType,
+    cautions, guidance, fallen,
+    dpAvg: Math.round(dpAvg),
+  };
+}
+
+function RadarChart({ data, size = 280, showLabels = true, compare = null }) {
+  const { soulFunction, soulDiscipline, naohi } = data;
+  const cx = size / 2;
+  const cy = size / 2;
+  const radius = size * 0.34;
+
+  const pointFor = (key, value) => {
+    const pos = SOULS[key].position;
+    const r = (value / 100) * radius;
+    return { x: cx + pos.x * r, y: cy + pos.y * r };
+  };
+
+  const axisPoint = (key) => {
+    const pos = SOULS[key].position;
+    return { x: cx + pos.x * radius, y: cy + pos.y * radius };
+  };
+
+  const labelPoint = (key) => {
+    const pos = SOULS[key].position;
+    const r = radius * 1.28;
+    return { x: cx + pos.x * r, y: cy + pos.y * r };
+  };
+
+  const polygonPoints = SOUL_ORDER
+    .map((k) => {
+      const p = pointFor(k, soulFunction[k]);
+      return `${p.x},${p.y}`;
+    })
+    .join(' ');
+
+  const comparePoints = compare
+    ? SOUL_ORDER.map((k) => {
+        const p = pointFor(k, compare.soulFunction[k]);
+        return `${p.x},${p.y}`;
+      }).join(' ')
+    : null;
+
+  const naohiStrength = naohi / 100;
+  const naohiRadius = 12 + naohiStrength * 14;
+  const gradId = `naohiGlow-${Math.round(naohiStrength * 100)}-${size}`;
+
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+      <defs>
+        <radialGradient id={gradId} cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stopColor="#d4a437" stopOpacity={0.85 * naohiStrength + 0.15} />
+          <stop offset="60%" stopColor="#d4a437" stopOpacity={0.18 * naohiStrength} />
+          <stop offset="100%" stopColor="#d4a437" stopOpacity="0" />
+        </radialGradient>
+        <filter id={`softBlur-${size}`}><feGaussianBlur stdDeviation="0.6" /></filter>
+      </defs>
+
+      {[0.25, 0.5, 0.75, 1].map((f, i) => (
+        <circle
+          key={i}
+          cx={cx} cy={cy} r={radius * f}
+          fill="none"
+          stroke="#3a2e1f"
+          strokeOpacity={0.12}
+          strokeDasharray={i === 3 ? '0' : '2 3'}
+        />
+      ))}
+
+      {SOUL_ORDER.map((k) => {
+        const p = axisPoint(k);
+        return (
+          <line
+            key={k}
+            x1={cx} y1={cy} x2={p.x} y2={p.y}
+            stroke="#3a2e1f"
+            strokeOpacity={0.15}
+            strokeWidth={0.8}
+          />
+        );
+      })}
+
+      {comparePoints && (
+        <polygon
+          points={comparePoints}
+          fill="#3a2e1f"
+          fillOpacity={0.04}
+          stroke="#3a2e1f"
+          strokeOpacity={0.25}
+          strokeWidth={1}
+          strokeDasharray="3 3"
+        />
+      )}
+
+      <polygon
+        points={polygonPoints}
+        fill={`url(#${gradId})`}
+        fillOpacity={0.5}
+        stroke="#8a6d2a"
+        strokeWidth={1.2}
+        filter={`url(#softBlur-${size})`}
+      />
+      <polygon
+        points={polygonPoints}
+        fill="none"
+        stroke="#8a6d2a"
+        strokeOpacity={0.85}
+        strokeWidth={1.4}
+      />
+
+      {SOUL_ORDER.map((k) => {
+        const p = pointFor(k, soulFunction[k]);
+        const dp = soulDiscipline[k];
+        const dpColor = dp >= 65 ? '#5b8c5a' : dp <= 40 ? '#c73e1d' : '#a08c5a';
+        return (
+          <g key={k}>
+            <circle cx={p.x} cy={p.y} r={9} fill={SOULS[k].color} fillOpacity={0.12} />
+            <circle cx={p.x} cy={p.y} r={5} fill={SOULS[k].color} />
+            <circle
+              cx={p.x} cy={p.y} r={9.5}
+              fill="none" stroke={dpColor}
+              strokeWidth={1.5}
+              strokeDasharray={dp <= 40 ? '2 2' : '0'}
+              opacity={0.85}
+            />
+          </g>
+        );
+      })}
+
+      <circle cx={cx} cy={cy} r={naohiRadius} fill={`url(#${gradId})`} />
+      <circle cx={cx} cy={cy} r={6} fill="#d4a437" fillOpacity={naohiStrength} />
+      <circle cx={cx} cy={cy} r={6} fill="none" stroke="#8a6d2a" strokeWidth={1} />
+
+      {showLabels && SOUL_ORDER.map((k) => {
+        const p = labelPoint(k);
+        return (
+          <g key={k}>
+            <text
+              x={p.x} y={p.y - 6}
+              textAnchor="middle"
+              fontFamily="'Shippori Mincho', serif"
+              fontSize={15}
+              fontWeight={600}
+              fill={SOULS[k].color}
+            >
+              {SOULS[k].kanji}
+            </text>
+            <text
+              x={p.x} y={p.y + 9}
+              textAnchor="middle"
+              fontFamily="'Zen Kaku Gothic New', sans-serif"
+              fontSize={9.5}
+              fill="#3a2e1f"
+              opacity={0.55}
+            >
+              {soulFunction[k]} ・ {SOULS[k].discipline.kanji}{soulDiscipline[k]}
+            </text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+function ShikonApp() {
+  const [view, setView] = useState('home');
+  const [entries, setEntries] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+
+  const [answers, setAnswers] = useState(Array(QUESTIONS.length).fill(null));
+  const [qIndex, setQIndex] = useState(0);
+  const [draftReflection, setDraftReflection] = useState('');
+  const [draftPrompt, setDraftPrompt] = useState(NAOHI_PROMPTS[0]);
+
+  useEffect(() => {
+    loadEntries().then((e) => {
+      setEntries(e);
+      setLoaded(true);
+    });
+  }, []);
+
+  const latest = entries[0] || null;
+  const previous = entries[1] || null;
+
+  const streak = useMemo(() => {
+    if (entries.length === 0) return 0;
+    const dates = entries.map((e) => new Date(e.date).toDateString());
+    const unique = [...new Set(dates)];
+    let s = 0;
+    const today = new Date();
+    for (let i = 0; i < 60; i++) {
+      const d = new Date(today);
+      d.setDate(d.getDate() - i);
+      if (unique.includes(d.toDateString())) s++;
+      else if (i > 0) break;
+    }
+    return s;
+  }, [entries]);
+
+  const startDiagnose = () => {
+    setAnswers(Array(QUESTIONS.length).fill(null));
+    setQIndex(0);
+    setDraftReflection('');
+    setDraftPrompt(NAOHI_PROMPTS[Math.floor(Math.random() * NAOHI_PROMPTS.length)]);
+    setView('diagnose');
+  };
+
+  const answerCurrent = (value) => {
+    const next = [...answers];
+    next[qIndex] = value;
+    setAnswers(next);
+    if (qIndex < QUESTIONS.length - 1) {
+      setTimeout(() => setQIndex(qIndex + 1), 180);
+    } else {
+      setTimeout(() => setView('reflect'), 220);
+    }
+  };
+
+  const saveEntry = async () => {
+    const scores = computeScores(answers);
+    const entry = {
+      id: Date.now(),
+      date: new Date().toISOString(),
+      ...scores,
+      reflection: draftReflection,
+      prompt: draftPrompt,
+    };
+    const updated = [entry, ...entries].slice(0, 365);
+    setEntries(updated);
+    await saveEntries(updated);
+    setView('result');
+  };
+
+  const deleteEntry = async (id) => {
+    const updated = entries.filter((e) => e.id !== id);
+    setEntries(updated);
+    await saveEntries(updated);
+  };
+
+  return (
+    <div className="shikon-root">
+      <header className="head">
+        <h1 className="head-title">四　魂　鑑</h1>
+        <div className="head-sub">S H I K O N  ・  K A G A M I</div>
+      </header>
+
+      {!loaded && (
+        <div style={{ textAlign: 'center', padding: 80, color: '#6b5b47' }}>
+          <span className="mincho">静かに巻物を開いています…</span>
+        </div>
+      )}
+
+      {loaded && view === 'home' && (
+        <HomeView
+          latest={latest}
+          previous={previous}
+          streak={streak}
+          entriesCount={entries.length}
+          onDiagnose={startDiagnose}
+          onShowResult={() => setView('result')}
+        />
+      )}
+
+      {loaded && view === 'diagnose' && (
+        <DiagnoseView
+          answers={answers}
+          qIndex={qIndex}
+          onAnswer={answerCurrent}
+          onBack={() => {
+            if (qIndex > 0) setQIndex(qIndex - 1);
+            else setView('home');
+          }}
+        />
+      )}
+
+      {loaded && view === 'reflect' && (
+        <ReflectView
+          data={computeScores(answers)}
+          prompt={draftPrompt}
+          onChangePrompt={() =>
+            setDraftPrompt(NAOHI_PROMPTS[Math.floor(Math.random() * NAOHI_PROMPTS.length)])
+          }
+          reflection={draftReflection}
+          setReflection={setDraftReflection}
+          onSave={saveEntry}
+        />
+      )}
+
+      {loaded && view === 'result' && entries[0] && (
+        <ResultView
+          entry={entries[0]}
+          previous={previous}
+          onDone={() => setView('home')}
+        />
+      )}
+
+      {loaded && view === 'history' && (
+        <HistoryView entries={entries} onDelete={deleteEntry} />
+      )}
+
+      {loaded && view === 'guide' && <GuideView />}
+
+      <nav className="tab-bar">
+        {[
+          { id: 'home', kanji: '今', label: 'IMA' },
+          { id: 'diagnose', kanji: '鑑', label: 'KAGAMI', action: startDiagnose },
+          { id: 'history', kanji: '履', label: 'RIREKI' },
+          { id: 'guide', kanji: '径', label: 'MICHI' },
+        ].map((t) => (
+          <button
+            key={t.id}
+            className={`tab-btn ${view === t.id ? 'active' : ''}`}
+            onClick={() => (t.action ? t.action() : setView(t.id))}
+          >
+            <span className="tab-kanji">{t.kanji}</span>
+            <span>{t.label}</span>
+          </button>
+        ))}
+      </nav>
+    </div>
+  );
+}
+
+function HomeView({ latest, previous, streak, entriesCount, onDiagnose, onShowResult }) {
+  const lastDate = latest ? new Date(latest.date) : null;
+  const hoursAgo = lastDate ? Math.floor((Date.now() - lastDate.getTime()) / 3600000) : null;
+
+  return (
+    <div className="fade-in">
+      <div className="naohi-banner">
+        <div className="title">直　霊<span className="naohi-mark" />省（かえりみ）る</div>
+        <div className="desc">恥・悔・畏・覚 — 四つの戒律を貫く一つの「省」</div>
+      </div>
+
+      {latest ? (
+        <div className="card">
+          <div className="section-rule"><span className="section-label">最 近 の 鑑</span></div>
+
+          <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 8 }}>
+            <RadarChart data={latest} size={260} compare={previous} />
+          </div>
+
+          <div style={{ textAlign: 'center', fontSize: 11, color: '#6b5b47', letterSpacing: '0.15em', marginBottom: 16 }}>
+            {hoursAgo !== null && hoursAgo < 1 && 'たった今'}
+            {hoursAgo !== null && hoursAgo >= 1 && hoursAgo < 24 && `${hoursAgo}時間前`}
+            {hoursAgo !== null && hoursAgo >= 24 && `${Math.floor(hoursAgo / 24)}日前`}
+            {previous && '  ・  前回と比較（点線）'}
+          </div>
+
+          <button className="btn-ghost" style={{ width: '100%' }} onClick={onShowResult}>
+            分析と指針を見る
+          </button>
+        </div>
+      ) : (
+        <div className="card" style={{ textAlign: 'center' }}>
+          <div className="mincho" style={{ fontSize: 15, lineHeight: 2, color: '#6b5b47', marginBottom: 20 }}>
+            はじめての鑑。<br />
+            いまの四魂と五情に、静かに問いかける。
+          </div>
+        </div>
+      )}
+
+      <div className="card">
+        <div className="section-rule"><span className="section-label">直 霊 の 歩 み</span></div>
+        <div style={{ display: 'flex', justifyContent: 'space-around', textAlign: 'center' }}>
+          <div>
+            <div className="streak-num">{streak}</div>
+            <div style={{ fontSize: 10, letterSpacing: '0.2em', color: '#6b5b47' }}>連 続 日 数</div>
+          </div>
+          <div style={{ width: 1, background: 'rgba(58,46,31,0.1)' }} />
+          <div>
+            <div className="streak-num">{entriesCount}</div>
+            <div style={{ fontSize: 10, letterSpacing: '0.2em', color: '#6b5b47' }}>総 鑑 数</div>
+          </div>
+        </div>
+        <div style={{ fontSize: 11.5, color: '#6b5b47', textAlign: 'center', marginTop: 14, lineHeight: 1.8 }}>
+          省みること、気づくこと、<br />それ自体が直霊の鍛錬。
+        </div>
+      </div>
+
+      <button className="btn-primary" onClick={onDiagnose}>
+        い ま 鑑 み る
+      </button>
+    </div>
+  );
+}
+
+function DiagnoseView({ answers, qIndex, onAnswer, onBack }) {
+  const q = QUESTIONS[qIndex];
+  const isNaohi = q.kind === 'naohi';
+  const isDiscipline = q.kind === 'discipline';
+  const soul = isNaohi ? null : SOULS[q.soul];
+  const progress = ((qIndex + 1) / QUESTIONS.length) * 100;
+
+  const accentColor = isNaohi ? '#d4a437' : soul.color;
+  const badgeContent = isNaohi
+    ? { kanji: '直霊', sub: `省（かえりみる）` }
+    : isDiscipline
+    ? { kanji: soul.kanji, sub: `戒律 ・ ${soul.discipline.kanji}（${soul.discipline.kana}）` }
+    : { kanji: soul.kanji, sub: `${soul.virtue} ・ ${soul.essence}` };
+
+  return (
+    <div className="fade-in" key={qIndex}>
+      <div className="progress-bar">
+        <div className="progress-fill" style={{ width: `${progress}%` }} />
+      </div>
+
+      <div style={{ textAlign: 'center', marginBottom: 8, fontSize: 11, color: '#6b5b47', letterSpacing: '0.2em' }}>
+        {qIndex + 1} ／ {QUESTIONS.length}
+        {isDiscipline && <span style={{ marginLeft: 14, color: accentColor }}>戒　律</span>}
+        {isNaohi && <span style={{ marginLeft: 14, color: accentColor }}>直　霊</span>}
+      </div>
+
+      <div style={{ textAlign: 'center', marginBottom: 18 }}>
+        <span className="soul-badge" style={{ color: accentColor }}>
+          <span className="soul-kanji">{badgeContent.kanji}</span>
+          <span className="soul-kana">{badgeContent.sub}</span>
+        </span>
+      </div>
+
+      <div className="q-text mincho fade-in" key={`q-${qIndex}`}>
+        {q.text}
+      </div>
+
+      {isDiscipline && (
+        <div style={{
+          textAlign: 'center', fontSize: 11.5, color: '#8a6d2a',
+          padding: '0 20px 20px', lineHeight: 1.8, fontFamily: "'Klee One', serif",
+        }}>
+          ＊ {soul.discipline.meaning}
+        </div>
+      )}
+
+      <div className="scale-row">
+        {SCALE_LABELS.map((label, i) => {
+          const value = i + 1;
+          const selected = answers[qIndex] === value;
+          return (
+            <button
+              key={i}
+              className={`scale-btn ${selected ? 'selected' : ''}`}
+              onClick={() => onAnswer(value)}
+            >
+              <span className="scale-num">{value}</span>
+              <span>{label}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      <div style={{ textAlign: 'center', marginTop: 40 }}>
+        <button className="btn-ghost" onClick={onBack}>
+          {qIndex === 0 ? '戻る' : '前の問いへ'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ReflectView({ data, prompt, onChangePrompt, reflection, setReflection, onSave }) {
+  return (
+    <div className="fade-in">
+      <div className="section-rule"><span className="section-label">直 霊 の 問 い</span></div>
+
+      <div className="card">
+        <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 18 }}>
+          <RadarChart data={data} size={200} showLabels={true} />
+        </div>
+
+        <div className="mincho" style={{
+          fontSize: 17, lineHeight: 1.9, textAlign: 'center',
+          padding: '8px 0 16px', color: '#2d231a',
+        }}>
+          {prompt}
+        </div>
+        <div style={{ textAlign: 'center', marginBottom: 16 }}>
+          <button className="btn-ghost" onClick={onChangePrompt} style={{ fontSize: 11 }}>
+            別の問いへ
+          </button>
+        </div>
+
+        <textarea
+          placeholder="一言だけでも記す。書くこと自体が直霊の鍛錬となる。"
+          value={reflection}
+          onChange={(e) => setReflection(e.target.value)}
+        />
+
+        <div style={{ fontSize: 11, color: '#6b5b47', marginTop: 8, letterSpacing: '0.1em' }}>
+          ＊ 書かずとも保存は可能。
+        </div>
+      </div>
+
+      <button className="btn-primary" onClick={onSave}>
+        鑑 を 納 め る
+      </button>
+    </div>
+  );
+}
+
+function ResultView({ entry, previous, onDone }) {
+  const { soulFunction, soulDiscipline, naohi, reflection, prompt } = entry;
+  const analysis = interpret(entry);
+
+  return (
+    <div className="fade-in">
+      <div className="section-rule"><span className="section-label">現 状 分 析</span></div>
+
+      <div className="card">
+        <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 10 }}>
+          <RadarChart data={entry} size={280} compare={previous} />
+        </div>
+
+        <div style={{ textAlign: 'center', marginBottom: 18 }}>
+          <div className="mincho" style={{ fontSize: 22, fontWeight: 600, letterSpacing: '0.15em', color: '#8a6d2a' }}>
+            {analysis.stage.label}
+          </div>
+          <div style={{ fontSize: 11.5, color: '#6b5b47', letterSpacing: '0.1em', marginTop: 4 }}>
+            {analysis.stage.desc}
+          </div>
+          <div style={{
+            fontSize: 11, color: '#6b5b47', letterSpacing: '0.15em',
+            marginTop: 12, paddingTop: 10, borderTop: '1px dashed rgba(58,46,31,0.12)',
+          }}>
+            {analysis.balance}　・　{analysis.soulType.label}　・　平均 {analysis.avg}
+          </div>
+        </div>
+
+        {SOUL_ORDER.map((k) => {
+          const s = SOULS[k];
+          const fn = soulFunction[k];
+          const dp = soulDiscipline[k];
+          const dpStatus = dp >= 65 ? 'good' : dp <= 40 ? 'warn' : 'mid';
+          return (
+            <div key={k} className="soul-detail-row">
+              <div className="soul-detail-label">
+                <span className="mincho" style={{ fontSize: 17, color: s.color, fontWeight: 600 }}>{s.kanji}</span>
+                <span style={{ fontSize: 9.5, color: '#6b5b47', marginLeft: 6, letterSpacing: '0.1em' }}>{s.virtue}</span>
+              </div>
+              <div className="soul-meter-stack">
+                <div className="soul-meter">
+                  <div className="soul-meter-fill" style={{ width: `${fn}%`, background: s.color }} />
+                </div>
+                <div className="discipline-row">
+                  <span className="discipline-label" style={{ color: s.color }}>
+                    {s.discipline.kanji}
+                  </span>
+                  <div className="discipline-meter">
+                    <div className={`discipline-fill ${dpStatus}`} style={{ width: `${dp}%` }} />
+                  </div>
+                </div>
+              </div>
+              <div className="soul-detail-vals">
+                <div className="mincho" style={{ fontSize: 14, color: s.color, fontWeight: 600 }}>{fn}</div>
+                <div style={{ fontSize: 9.5, color: '#6b5b47' }}>{s.discipline.kanji}{dp}</div>
+              </div>
+            </div>
+          );
+        })}
+
+        <div className="naohi-detail">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span className="mincho" style={{ fontSize: 17, color: '#8a6d2a', fontWeight: 600 }}>直霊</span>
+            <span style={{ fontSize: 10, color: '#6b5b47', letterSpacing: '0.1em' }}>省 ・ かえりみる</span>
+          </div>
+          <div className="naohi-meter">
+            <div className="naohi-meter-fill" style={{ width: `${naohi}%` }} />
+          </div>
+          <div className="mincho" style={{ fontSize: 14, color: '#8a6d2a', fontWeight: 600, minWidth: 32, textAlign: 'right' }}>
+            {naohi}
+          </div>
+        </div>
+      </div>
+
+      {analysis.fallen.length > 0 && (
+        <div className="card fallen-card">
+          <div className="section-rule"><span className="section-label" style={{ color: '#c73e1d' }}>堕 ち た 魂 の 警 告</span></div>
+          {analysis.fallen.map((f, i) => (
+            <div key={i} className="fallen-item">
+              <div className="fallen-kanji">{f.name}</div>
+              <div className="fallen-desc">{f.desc}</div>
+            </div>
+          ))}
+          <div style={{ fontSize: 11, color: '#6b5b47', marginTop: 8, lineHeight: 1.8, fontFamily: "'Klee One', serif" }}>
+            ＊ 機能は強いのに戒律が弱い状態。直霊が統御を失えば、四魂は本来の働きから堕ちる。
+          </div>
+        </div>
+      )}
+
+      {analysis.cautions.length > 0 && (
+        <div className="card">
+          <div className="section-rule"><span className="section-label">注　意　点</span></div>
+          {analysis.cautions.map((c, i) => (
+            <div key={i} className={`caution-item ${c.severity}`}>{c.text}</div>
+          ))}
+        </div>
+      )}
+
+      {analysis.guidance.length > 0 && (
+        <div className="card">
+          <div className="section-rule"><span className="section-label">行 動 の 指 針</span></div>
+          {analysis.guidance.map((g, i) => (
+            <div key={i} className="guide-item">{g}</div>
+          ))}
+        </div>
+      )}
+
+      {reflection && (
+        <div className="card">
+          <div className="section-rule"><span className="section-label">直 霊 の 記</span></div>
+          <div style={{ fontSize: 12, color: '#8a6d2a', marginBottom: 10, letterSpacing: '0.1em' }}>
+            問い ・ {prompt}
+          </div>
+          <div className="klee" style={{
+            fontSize: 14.5, lineHeight: 2,
+            whiteSpace: 'pre-wrap',
+            padding: '12px 14px',
+            background: 'rgba(212, 164, 55, 0.05)',
+            borderLeft: '2px solid #d4a437',
+          }}>
+            {reflection}
+          </div>
+        </div>
+      )}
+
+      <button className="btn-primary" onClick={onDone}>
+        納 め る
+      </button>
+    </div>
+  );
+}
+
+function HistoryView({ entries, onDelete }) {
+  const [selected, setSelected] = useState(null);
+
+  if (selected) {
+    return (
+      <div className="fade-in">
+        <div style={{ marginBottom: 14 }}>
+          <button className="btn-ghost" onClick={() => setSelected(null)}>← 履歴へ戻る</button>
+        </div>
+        <ResultView
+          entry={selected}
+          previous={entries[entries.indexOf(selected) + 1] || null}
+          onDone={() => setSelected(null)}
+        />
+        <button
+          className="btn-ghost"
+          style={{ width: '100%', marginTop: 10, borderColor: '#c73e1d', color: '#c73e1d' }}
+          onClick={() => {
+            if (confirm('この鑑を削除しますか')) {
+              onDelete(selected.id);
+              setSelected(null);
+            }
+          }}
+        >
+          この鑑を削除
+        </button>
+      </div>
+    );
+  }
+
+  if (entries.length === 0) {
+    return (
+      <div className="fade-in card" style={{ textAlign: 'center', padding: 40 }}>
+        <div className="mincho" style={{ fontSize: 15, color: '#6b5b47', lineHeight: 2 }}>
+          まだ記録なし。<br />
+          まず一度、鑑みるところから。
+        </div>
+      </div>
+    );
+  }
+
+  const recent = entries.slice(0, 30);
+  const avgFn = {};
+  const avgDp = {};
+  let avgNaohi = 0;
+  SOUL_ORDER.forEach((k) => {
+    avgFn[k] = Math.round(recent.reduce((s, e) => s + (e.soulFunction?.[k] ?? 50), 0) / recent.length);
+    avgDp[k] = Math.round(recent.reduce((s, e) => s + (e.soulDiscipline?.[k] ?? 50), 0) / recent.length);
+  });
+  avgNaohi = Math.round(recent.reduce((s, e) => s + (e.naohi ?? 50), 0) / recent.length);
+
+  const trendData = { soulFunction: avgFn, soulDiscipline: avgDp, naohi: avgNaohi };
+
+  return (
+    <div className="fade-in">
+      {entries.length >= 3 && (
+        <div className="card">
+          <div className="section-rule"><span className="section-label">近 の 傾 向（{recent.length}鑑）</span></div>
+          <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 14 }}>
+            <RadarChart data={trendData} size={220} />
+          </div>
+          <div style={{ fontSize: 11.5, color: '#6b5b47', textAlign: 'center', lineHeight: 1.8 }}>
+            長期平均。偏りが続く魂が、鍛錬すべき魂。
+          </div>
+        </div>
+      )}
+
+      <div className="section-rule"><span className="section-label">鑑 の 軌 跡</span></div>
+
+      {entries.map((entry) => {
+        const d = new Date(entry.date);
+        const dateStr = `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+        const sFn = entry.soulFunction || {};
+        const fnAvg = Math.round(SOUL_ORDER.reduce((s, k) => s + (sFn[k] ?? 50), 0) / 4);
+        return (
+          <div key={entry.id} className="history-card" onClick={() => setSelected(entry)}>
+            <div style={{ width: 60, height: 60, flexShrink: 0 }}>
+              <RadarChart data={entry} size={60} showLabels={false} />
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div className="history-date">{dateStr}</div>
+              <div className="tiny-meter">
+                {SOUL_ORDER.map((k) => (
+                  <div
+                    key={k}
+                    className="tiny-meter-cell"
+                    style={{
+                      background: SOULS[k].color,
+                      opacity: (sFn[k] ?? 50) / 100,
+                      height: `${((sFn[k] ?? 50) / 100) * 8}px`,
+                      alignSelf: 'flex-end',
+                    }}
+                  />
+                ))}
+              </div>
+              <div style={{ fontSize: 10, color: '#8a7b62', marginTop: 4, letterSpacing: '0.1em' }}>
+                平均 {fnAvg}
+                {' ・ 直霊 '}{entry.naohi ?? '—'}
+                {entry.reflection && <span style={{ marginLeft: 10 }}>・ 記</span>}
+                {entry.legacy && <span style={{ marginLeft: 10, opacity: 0.6 }}>・ 旧</span>}
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function GuideView() {
+  return (
+    <div className="fade-in">
+      <div className="section-rule"><span className="section-label">一 霊 四 魂</span></div>
+
+      <div className="card">
+        <div style={{ textAlign: 'center', margin: '10px 0 20px' }}>
+          <div className="mincho" style={{ fontSize: 22, letterSpacing: '0.2em', marginBottom: 4 }}>
+            直 霊 <span className="naohi-mark" />
+          </div>
+          <div style={{ fontSize: 11, color: '#6b5b47', letterSpacing: '0.2em' }}>
+            省（かえりみる）— 四魂を統べる良心
+          </div>
+        </div>
+
+        <div style={{ fontSize: 13.5, lineHeight: 2, color: '#3a2e1f' }}>
+          本田親徳が体系化し、出口王仁三郎の『霊界物語』に詳述された一霊四魂説。中心に座す直霊が四魂を統べ、暴走を抑える。直霊が統御を失えば「曲霊（まがひ）」となり、四魂はすべて堕ちる。
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="section-rule"><span className="section-label">五 情 の 戒 律</span></div>
+        <div style={{ fontSize: 12.5, lineHeight: 2, color: '#3a2e1f', marginBottom: 16 }}>
+          一霊四魂それぞれに、天賦の戒律が一つずつ与えられている。これが「神明の戒律」。
+        </div>
+
+        <div className="kairitsu-table">
+          {[
+            { key: 'naohi', kanji: '直霊', virtue: '良心', d: '省', dk: 'かえりみる', color: '#8a6d2a', fallen: '曲霊' },
+            { key: 'aramitama', kanji: '荒魂', virtue: '勇', d: '恥', dk: 'はじる', color: SOULS.aramitama.color, fallen: '争魂' },
+            { key: 'nigimitama', kanji: '和魂', virtue: '親', d: '悔', dk: 'くゆる', color: SOULS.nigimitama.color, fallen: '悪魂' },
+            { key: 'sakimitama', kanji: '幸魂', virtue: '愛', d: '畏', dk: 'おそる', color: SOULS.sakimitama.color, fallen: '逆魂' },
+            { key: 'kushimitama', kanji: '奇魂', virtue: '智', d: '覚', dk: 'さとる', color: SOULS.kushimitama.color, fallen: '狂魂' },
+          ].map((row) => (
+            <div key={row.key} className="kairitsu-row">
+              <div className="kairitsu-name" style={{ color: row.color }}>
+                <span className="mincho kairitsu-kanji">{row.kanji}</span>
+                <span className="kairitsu-virtue">{row.virtue}</span>
+              </div>
+              <div className="kairitsu-discipline" style={{ color: row.color }}>
+                <span className="mincho" style={{ fontSize: 22, fontWeight: 600 }}>{row.d}</span>
+                <span style={{ fontSize: 10, opacity: 0.7, letterSpacing: '0.1em' }}>{row.dk}</span>
+              </div>
+              <div className="kairitsu-fallen">
+                堕ちると<br /><span style={{ color: '#c73e1d' }}>{row.fallen}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div style={{
+          fontSize: 12, lineHeight: 2, color: '#6b5b47',
+          marginTop: 16, padding: 12,
+          background: 'rgba(212,164,55,0.06)', borderLeft: '3px solid #d4a437',
+        }}>
+          恥・悔・畏・覚のいずれの中にも「省」がある。<br />
+          省は四つの戒律を貫く垂直の力。
+        </div>
+      </div>
+
+      {SOUL_ORDER.map((k) => {
+        const s = SOULS[k];
+        return (
+          <div key={k} className="card">
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 14 }}>
+              <div className="guide-title" style={{ color: s.color }}>{s.kanji}</div>
+              <div style={{ fontSize: 11, color: '#6b5b47', letterSpacing: '0.2em' }}>
+                {s.kana}　・　{s.virtue}　—　{s.essence}
+              </div>
+            </div>
+
+            <ul className="dot-list">
+              <li>
+                <span style={{ color: s.color, fontWeight: 600 }}>戒律</span>：
+                <span className="mincho" style={{ fontSize: 16, color: s.color, fontWeight: 600 }}>{s.discipline.kanji}</span>
+                （{s.discipline.kana}）— {s.discipline.meaning}
+              </li>
+              {s.subdivision && (
+                <li>
+                  <span style={{ color: s.color, fontWeight: 600 }}>細分</span>：{s.subdivision}
+                </li>
+              )}
+              <li><span style={{ color: s.color, fontWeight: 600 }}>低次</span>：{s.low}</li>
+              <li><span style={{ color: s.color, fontWeight: 600 }}>暴走</span>：{s.high}</li>
+              <li>
+                <span style={{ color: '#c73e1d', fontWeight: 600 }}>堕ちると</span>：
+                <span style={{ color: '#c73e1d' }}>{s.fallen}</span> — {s.fallenDesc}
+              </li>
+              <li><span style={{ color: s.color, fontWeight: 600 }}>鍛錬</span>：{s.practice}</li>
+              <li>
+                <span style={{ color: s.color, fontWeight: 600 }}>抑える対</span>：
+                {SOULS[OPPOSITES[k]].kanji}（{SOULS[OPPOSITES[k]].discipline.kanji}）
+              </li>
+            </ul>
+          </div>
+        );
+      })}
+
+      <div className="card">
+        <div className="section-rule"><span className="section-label">経 の 魂 ・ 緯 の 魂</span></div>
+        <ul className="dot-list">
+          <li><span className="mincho" style={{ fontWeight: 600 }}>経（たて）の魂</span>：荒魂・和魂 — 主軸が経の魂なら<span style={{ color: '#8a6d2a' }}>厳霊型（いづみたま）</span></li>
+          <li><span className="mincho" style={{ fontWeight: 600 }}>緯（よこ）の魂</span>：幸魂・奇魂 — 主軸が緯の魂なら<span style={{ color: '#8a6d2a' }}>瑞霊型（みづみたま）</span></li>
+        </ul>
+        <div style={{ fontSize: 12, color: '#6b5b47', marginTop: 10, lineHeight: 1.9 }}>
+          出口なお（厳霊）と王仁三郎（瑞霊）の組合せが大本を動かしたとされる。自分がどちら型かを知ることで、鍛錬の方向が定まる。
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="section-rule"><span className="section-label">発 達 の 階 梯</span></div>
+        <ul className="dot-list">
+          <li><span className="mincho" style={{ fontWeight: 600 }}>一徳</span>　一つの魂が突出する</li>
+          <li><span className="mincho" style={{ fontWeight: 600 }}>二徳</span>　二つの魂が組合さる</li>
+          <li><span className="mincho" style={{ fontWeight: 600 }}>三徳</span>　三つの魂が発達（勇智愛・勇親愛・勇親智・親智愛）</li>
+          <li>
+            <span className="mincho" style={{ fontWeight: 600, color: '#8a6d2a' }}>全徳</span>　
+            四魂すべて発達 — <span className="mincho" style={{ color: '#8a6d2a' }}>伊都能売御霊（いづのめのみたま）</span>
+          </li>
+        </ul>
+        <div style={{ fontSize: 12, color: '#6b5b47', marginTop: 10, lineHeight: 1.9 }}>
+          中村天風の「絶対積極」は、機能的にこの全徳の境地に通じる。何ものにもとらわれぬ、もう一段高い場所。
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="section-rule"><span className="section-label">鍛 錬 の 五 段</span></div>
+        <ul className="dot-list">
+          <li><span className="mincho" style={{ fontWeight: 600 }}>識別</span>　どの魂が動いているかに気づく</li>
+          <li><span className="mincho" style={{ fontWeight: 600 }}>均衡</span>　眠っている魂を起こす</li>
+          <li><span className="mincho" style={{ fontWeight: 600 }}>切替</span>　場面に応じて主導魂を選ぶ</li>
+          <li><span className="mincho" style={{ fontWeight: 600 }}>統御</span>　直霊を常駐させる（観察する自己）</li>
+          <li><span className="mincho" style={{ fontWeight: 600 }}>発現</span>　四魂同時に働かせる（伊都能売御霊）</li>
+        </ul>
+      </div>
+
+      <div className="card">
+        <div className="section-rule"><span className="section-label">直 霊 の 鍛 錬</span></div>
+        <ul className="dot-list">
+          <li><span className="mincho" style={{ fontWeight: 600 }}>第一原則</span>　観察する自己を常駐させる（安定打坐法・脈想法）</li>
+          <li><span className="mincho" style={{ fontWeight: 600 }}>第二原則</span>　五情の循環。朝に意図し、夜に省みる</li>
+          <li><span className="mincho" style={{ fontWeight: 600 }}>第三原則</span>　息長法・クンバハカ・自修鎮魂で、天との回路を保つ</li>
+        </ul>
+      </div>
+
+      <div className="card">
+        <div className="section-rule"><span className="section-label">注 意 の 要</span></div>
+        <ul className="dot-list">
+          <li>最強の魂から鍛えない。偏りがさらに深まる</li>
+          <li>直霊なき四魂強化は危険。荒魂のみ強めれば争魂となる</li>
+          <li>曲霊は善の仮面で来る。「自分は正しい」「もっと評価されるべき」が紛れ込む</li>
+          <li>帰神法（神懸り行）は審神者なき独学を厳に戒める。まず自修鎮魂から</li>
+          <li>頭で覚えず、身体と行で覚える</li>
+        </ul>
+      </div>
+
+      <div style={{
+        textAlign: 'center', padding: '24px 0',
+        fontSize: 11, color: '#8a7b62', letterSpacing: '0.25em',
+      }}>
+        — 鑑みる・記す・繰り返す —
+      </div>
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<ShikonApp />);
+  </script>
+
+  <style>
+@import url('https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@400;500;600;700&family=Zen+Kaku+Gothic+New:wght@300;400;500;700&family=Klee+One:wght@400;600&display=swap');
+
+* { box-sizing: border-box; }
+
+.shikon-root {
+  min-height: 100vh;
+  background:
+    radial-gradient(ellipse at top, #f5ead5 0%, transparent 60%),
+    radial-gradient(ellipse at bottom, #eadcc0 0%, transparent 60%),
+    #f3e6cc;
+  color: #2d231a;
+  font-family: 'Zen Kaku Gothic New', 'Hiragino Sans', sans-serif;
+  padding: 20px 18px 120px;
+  position: relative;
+  overflow-x: hidden;
+}
+
+.shikon-root::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image:
+    radial-gradient(circle at 15% 20%, rgba(58,46,31,0.025) 1px, transparent 1px),
+    radial-gradient(circle at 75% 60%, rgba(58,46,31,0.02) 1px, transparent 1px);
+  background-size: 24px 24px, 30px 30px;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.shikon-root > * { position: relative; z-index: 1; }
+
+.mincho { font-family: 'Shippori Mincho', 'Yu Mincho', serif; }
+.klee { font-family: 'Klee One', 'Shippori Mincho', serif; }
+
+.head {
+  text-align: center;
+  padding: 8px 0 24px;
+  border-bottom: 1px solid rgba(58,46,31,0.1);
+  margin-bottom: 24px;
+}
+.head-title {
+  font-family: 'Shippori Mincho', serif;
+  font-size: 30px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  color: #2d231a;
+  margin: 0;
+}
+.head-sub {
+  font-size: 11px;
+  letter-spacing: 0.3em;
+  color: #6b5b47;
+  margin-top: 6px;
+}
+
+.card {
+  background: rgba(253, 248, 235, 0.7);
+  border: 1px solid rgba(58,46,31,0.1);
+  border-radius: 4px;
+  padding: 22px 20px;
+  margin-bottom: 18px;
+  backdrop-filter: blur(4px);
+}
+
+.section-label {
+  font-family: 'Shippori Mincho', serif;
+  font-size: 13px;
+  letter-spacing: 0.25em;
+  color: #6b5b47;
+  text-align: center;
+  margin-bottom: 14px;
+}
+
+.section-rule {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+.section-rule::before, .section-rule::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: rgba(58,46,31,0.15);
+  max-width: 50px;
+}
+
+.btn-primary {
+  width: 100%;
+  padding: 16px;
+  background: #2d231a;
+  color: #f5ead5;
+  border: none;
+  border-radius: 2px;
+  font-family: 'Shippori Mincho', serif;
+  font-size: 15px;
+  letter-spacing: 0.25em;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+.btn-primary:active { background: #000; letter-spacing: 0.3em; }
+.btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.btn-ghost {
+  padding: 10px 18px;
+  background: transparent;
+  color: #2d231a;
+  border: 1px solid rgba(58,46,31,0.3);
+  border-radius: 2px;
+  font-family: 'Shippori Mincho', serif;
+  font-size: 13px;
+  letter-spacing: 0.2em;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.btn-ghost:active { border-color: #2d231a; background: rgba(58,46,31,0.04); }
+
+.tab-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: rgba(245, 234, 213, 0.92);
+  backdrop-filter: blur(12px);
+  border-top: 1px solid rgba(58,46,31,0.12);
+  padding: 10px 0 calc(10px + env(safe-area-inset-bottom));
+  display: flex;
+  justify-content: space-around;
+  z-index: 100;
+}
+.tab-btn {
+  flex: 1;
+  background: none;
+  border: none;
+  padding: 8px 4px;
+  font-family: 'Shippori Mincho', serif;
+  font-size: 11px;
+  letter-spacing: 0.2em;
+  color: #8a7b62;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  transition: color 0.2s;
+}
+.tab-btn.active { color: #2d231a; }
+.tab-kanji { font-size: 20px; font-weight: 600; }
+.tab-btn.active .tab-kanji {
+  text-shadow: 0 0 12px rgba(212, 164, 55, 0.4);
+}
+
+.soul-badge {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 14px;
+  border-radius: 20px;
+  background: rgba(253, 248, 235, 0.8);
+  border: 1px solid currentColor;
+  font-family: 'Shippori Mincho', serif;
+}
+.soul-kanji { font-size: 18px; font-weight: 600; }
+.soul-kana { font-size: 10px; opacity: 0.7; letter-spacing: 0.1em; }
+
+.scale-row {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 8px;
+  margin-top: 24px;
+}
+.scale-btn {
+  aspect-ratio: 1;
+  border: 1px solid rgba(58,46,31,0.2);
+  background: rgba(253, 248, 235, 0.5);
+  border-radius: 2px;
+  font-family: 'Shippori Mincho', serif;
+  font-size: 11px;
+  color: #6b5b47;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 4px;
+  transition: all 0.25s ease;
+  padding: 6px;
+}
+.scale-btn:active { border-color: #2d231a; background: rgba(253, 248, 235, 0.9); }
+.scale-btn.selected {
+  background: #2d231a; color: #f5ead5; border-color: #2d231a;
+}
+.scale-num { font-size: 17px; font-weight: 600; }
+
+.progress-bar {
+  height: 2px;
+  background: rgba(58,46,31,0.1);
+  margin-bottom: 28px;
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  background: #d4a437;
+  transition: width 0.4s ease;
+}
+
+.soul-detail-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid rgba(58,46,31,0.06);
+}
+.soul-detail-row:last-child { border-bottom: none; }
+.soul-detail-label { min-width: 60px; }
+.soul-meter-stack { flex: 1; display: flex; flex-direction: column; gap: 4px; }
+.soul-meter {
+  height: 4px;
+  background: rgba(58,46,31,0.08);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.soul-meter-fill { height: 100%; transition: width 0.8s ease; }
+
+.discipline-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.discipline-label {
+  font-family: 'Shippori Mincho', serif;
+  font-size: 12px;
+  font-weight: 600;
+  min-width: 16px;
+}
+.discipline-meter {
+  flex: 1;
+  height: 2px;
+  background: rgba(58,46,31,0.06);
+  border-radius: 1px;
+  overflow: hidden;
+}
+.discipline-fill { height: 100%; transition: width 0.8s ease; }
+.discipline-fill.good { background: #5b8c5a; }
+.discipline-fill.mid { background: #a08c5a; }
+.discipline-fill.warn { background: #c73e1d; }
+
+.soul-detail-vals {
+  text-align: right;
+  min-width: 38px;
+}
+
+.naohi-detail {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 12px 8px;
+  margin-top: 12px;
+  border-top: 1px solid rgba(212,164,55,0.3);
+  background: rgba(212,164,55,0.04);
+}
+.naohi-meter {
+  flex: 1;
+  height: 5px;
+  background: rgba(58,46,31,0.08);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.naohi-meter-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #d4a437, #f3d878);
+  box-shadow: 0 0 8px rgba(212,164,55,0.5);
+  transition: width 0.8s ease;
+}
+
+.fallen-card {
+  background: rgba(199, 62, 29, 0.04);
+  border-color: rgba(199, 62, 29, 0.2);
+}
+.fallen-item {
+  padding: 12px 14px;
+  margin-bottom: 8px;
+  background: rgba(199, 62, 29, 0.07);
+  border-left: 3px solid #c73e1d;
+}
+.fallen-kanji {
+  font-family: 'Shippori Mincho', serif;
+  font-size: 17px;
+  font-weight: 600;
+  color: #c73e1d;
+  letter-spacing: 0.1em;
+  margin-bottom: 4px;
+}
+.fallen-desc {
+  font-size: 12.5px;
+  color: #6b3e30;
+  line-height: 1.7;
+}
+
+.caution-item, .guide-item {
+  padding: 12px 14px;
+  margin-bottom: 8px;
+  border-radius: 2px;
+  font-size: 13.5px;
+  line-height: 1.85;
+}
+.caution-item.high {
+  background: rgba(199, 62, 29, 0.08);
+  border-left: 3px solid #c73e1d;
+}
+.caution-item.mid {
+  background: rgba(199, 62, 29, 0.04);
+  border-left: 3px solid #d6896f;
+}
+.guide-item {
+  background: rgba(212, 164, 55, 0.08);
+  border-left: 3px solid #d4a437;
+}
+
+.naohi-mark {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  background: #d4a437;
+  border-radius: 50%;
+  box-shadow: 0 0 10px #d4a437;
+  margin: 0 8px;
+  vertical-align: middle;
+}
+
+.streak-num {
+  font-family: 'Shippori Mincho', serif;
+  font-size: 44px;
+  font-weight: 600;
+  color: #8a6d2a;
+  letter-spacing: 0.05em;
+}
+
+textarea {
+  width: 100%;
+  min-height: 140px;
+  padding: 14px;
+  background: rgba(253, 248, 235, 0.6);
+  border: 1px solid rgba(58,46,31,0.15);
+  border-radius: 2px;
+  font-family: 'Klee One', 'Shippori Mincho', serif;
+  font-size: 14.5px;
+  line-height: 1.9;
+  color: #2d231a;
+  resize: vertical;
+}
+textarea:focus { outline: none; border-color: #8a6d2a; }
+
+.fade-in { animation: fade 0.7s ease both; }
+@keyframes fade { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+.q-text {
+  font-family: 'Shippori Mincho', serif;
+  font-size: 19px;
+  line-height: 1.9;
+  text-align: center;
+  color: #2d231a;
+  padding: 28px 12px 8px;
+  min-height: 100px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.history-card {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  padding: 14px;
+  background: rgba(253, 248, 235, 0.55);
+  border: 1px solid rgba(58,46,31,0.08);
+  border-radius: 2px;
+  margin-bottom: 10px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.history-card:active { background: rgba(253, 248, 235, 0.9); }
+
+.history-date {
+  font-family: 'Shippori Mincho', serif;
+  font-size: 12px;
+  color: #6b5b47;
+  letter-spacing: 0.1em;
+}
+
+.tiny-meter {
+  display: flex;
+  gap: 2px;
+  height: 8px;
+  margin-top: 4px;
+}
+.tiny-meter-cell { flex: 1; border-radius: 1px; }
+
+.dot-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.dot-list li {
+  padding: 8px 0 8px 18px;
+  position: relative;
+  font-size: 13.5px;
+  line-height: 1.85;
+  border-bottom: 1px solid rgba(58,46,31,0.05);
+}
+.dot-list li::before {
+  content: '・';
+  position: absolute;
+  left: 0;
+  color: #8a6d2a;
+  font-weight: 700;
+}
+
+.guide-title {
+  font-family: 'Shippori Mincho', serif;
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.naohi-banner {
+  text-align: center;
+  padding: 18px;
+  background:
+    radial-gradient(ellipse at center, rgba(212,164,55,0.12) 0%, transparent 70%);
+  margin-bottom: 20px;
+}
+.naohi-banner .title {
+  font-family: 'Shippori Mincho', serif;
+  font-size: 16px;
+  letter-spacing: 0.3em;
+  color: #8a6d2a;
+}
+.naohi-banner .desc {
+  font-size: 11.5px;
+  color: #6b5b47;
+  margin-top: 6px;
+  letter-spacing: 0.08em;
+}
+
+.kairitsu-table {
+  border: 1px solid rgba(58,46,31,0.1);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.kairitsu-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  align-items: center;
+  padding: 12px 10px;
+  border-bottom: 1px solid rgba(58,46,31,0.06);
+  background: rgba(253,248,235,0.4);
+}
+.kairitsu-row:last-child { border-bottom: none; }
+.kairitsu-name { display: flex; flex-direction: column; gap: 2px; }
+.kairitsu-kanji {
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+}
+.kairitsu-virtue {
+  font-size: 10px;
+  opacity: 0.7;
+  letter-spacing: 0.2em;
+}
+.kairitsu-discipline {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+.kairitsu-fallen {
+  font-family: 'Shippori Mincho', serif;
+  font-size: 10px;
+  text-align: right;
+  color: #6b5b47;
+  line-height: 1.6;
+  letter-spacing: 0.05em;
+}
+  </style>
+</body>
+</html>
